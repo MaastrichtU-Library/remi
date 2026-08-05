@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>REMI 2.1 - Home</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&amp;display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .container {
+            display: flex;
+            flex-wrap: wrap;
+            padding: 30px;
+            justify-content: center;
+        }
+
+        .left-panel, .right-panel {
+            margin: 0;
+        }
+
+        .left-panel {
+            flex: 1 1 400px;
+            max-width: 500px;
+            text-align: center;
+        }
+
+        .left-panel img {
+            width: 100%;
+            max-width: 450px;
+            height: auto;
+        }
+
+        .right-panel {
+            flex: 1 1 400px;
+            max-width: 600px;
+        }
+
+        .right-panel h2 {
+            margin-top: 0;
+        }
+
+        footer {
+            margin-top: 30px;
+        }
+
+    </style>
+</head>
+<body>
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+
+<nav>
+    <div class="nav-links">
+        <a href="/" class="{% if request.path == '/' %}active{% endif %}">Home</a>
+        <a href="/keyword_search" class="{% if request.path == '/keyword_search' %}active{% endif %}">Keyword Search</a>
+        <a href="/multiple_search" class="{% if request.path == '/multiple_search' %}active{% endif %}">Proximity Search</a>
+        <a href="/contact" class="{% if request.path == '/contact' %}active{% endif %}">Contact</a>
+    </div>
+    <div class="logo">
+        <img src="{{ url_for('static', filename='UMlibrarywebsite.webp') }}" alt="Maastricht University">
+        <span>REMI 2.1</span>
+    </div>
+</nav>
+
+<div class="container">
+    <div class="left-panel">
+        <img src="{{ url_for('static', filename='remi2logo.jpg') }}" alt="REMI 2.1 Logo">
+    </div>
+    <div class="right-panel">
+        <h2>Welcome to REMI 2.1</h2>
+        <p><strong>REMI</strong> stands for <em>Related Expression Machine Identification</em>. This tool helps researchers explore keyword variants in PubMed literature efficiently.</p>
+
+        <h3>Keyword Search</h3>
+        <p>
+            Enter a single wildcard term like <code>canc*</code> to find variants such as <em>cancer</em>, <em>cancer-treatment</em>, <em>cancers</em>, or <em>cancerous</em>.<br><br>
+            <strong>Options:</strong><br>
+            • <strong>Date range:</strong> Filter results using From/To fields.<br>
+            • <strong>Exclude hyphenated words:</strong> Skip hyphenated variants like <em>cancer-treatment</em>.<br>
+            • <strong>Copy Selected:</strong> Copy selected variants to clipboard.<br>
+            • <strong>Export to CSV:</strong> Save selected variants (with frequency) to a .csv file.<br>            
+        </p>
+
+        <h3>Proximity Search</h3>
+        <p>
+            Enter two sets of terms, combining wildcard and non-wildcard expressions — e.g. <code>stroke OR cerebrovasc* AND rehab* OR recove*</code> — to explore all variants and create proximity-based combinations such as <em>"stroke rehabilitation"[tiab:~3]</em> or <em>"cerebrovascular recovery"[tiab:~3]</em>.<br><br>
+
+            Non-wildcard terms (e.g., <code>stroke</code>) are included in the final search but no variants are discovered or excluded for them.<br><br>
+
+            <strong>Options:</strong><br>
+            • <strong>Date range:</strong> Limit results to a publication timeframe.<br>
+            • <strong>Exclude hyphenated words:</strong> Skip hyphenated variants in output.<br>
+            • <strong>Proximity Distance:</strong> Set how close terms must appear in text (e.g. ~3).<br>
+            • <strong>Precise Proximity:</strong> Perform individual searches for every term pair instead of one combined query. <em>This may increase accuracy but also processing time.</em><br>
+            • <strong>Copy / Export:</strong> Copy the query or export as .txt / .doc.<br>            
+        </p>
+        <p style="font-size: 0.9em; color: #555; margin-top: 20px;">
+            Note: REMI 2.1 uses the <a href="https://metapub.org/" target="_blank" style="color: #00698f;">metapub</a> Python library for retrieving PubMed data.
+        </p>        
+    </div>
+</div>
+<script>
+    $(document).ready(function () {
+        $('.logo').css('cursor', 'pointer').on('click', function () {
+            $('#memory-modal').fadeIn();
+        });
+    
+        $('#close-memory, #memory-backdrop').on('click', function () {
+            $('#memory-modal').fadeOut();
+            $('#memory-modal iframe').attr('src', '/memory_game'); // reset game on close
+        });
+    });
+</script>
+
+
+<footer>
+    <div class="footer-center">Related Expression Machine Identification (REMI 2.1) - by University Library Maastricht - 2026</div>
+    <div class="footer-session">Session ID: {{ session_id }}</div>
+    <div class="footer-mobile">REMI 2.1 (2026) by UM</div>
+</footer>
+
+</body>
+</html>

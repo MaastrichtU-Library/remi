@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">    
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Proximity Search - REMI 2.1</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&amp;display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<nav>
+    <div class="nav-links">
+        <a href="/" class="{% if request.path == '/' %}active{% endif %}">Home</a>
+        <a href="/keyword_search" class="{% if request.path == '/keyword_search' %}active{% endif %}">Keyword Search</a>
+        <a href="/multiple_search" class="{% if request.path == '/multiple_search' %}active{% endif %}">Proximity Search</a>
+        <a href="/contact" class="{% if request.path == '/contact' %}active{% endif %}">Contact</a>
+    </div>
+    <div class="logo">
+        <img src="{{ url_for('static', filename='UMlibrarywebsite.webp') }}" alt="Maastricht University">
+        <span>REMI 2.1</span>
+    </div>
+</nav>
+
+<div class="container">
+    <div class="left-panel">
+        <form id="search-form">
+            <label>Field 1:</label>
+            <input type="text" id="term1" name="term1" placeholder="e.g. cancer* OR neoplas*">
+
+            <label>Field 2:</label>
+            <input type="text" id="term2" name="term2" placeholder="e.g. therap* OR treatment*">
+
+            <label>From:</label>
+            <input type="date" id="date_from_input" name="date_from">
+
+            <label>To:</label>
+            <input type="date" id="date_to_input" name="date_to">
+            <br>
+            <label>
+                <input type="checkbox" id="exclude_hyphens" name="exclude_hyphens" value="true" checked>
+                Exclude Hyphenated Words
+                <span style="cursor: help; color: #007fad;" title="Omits hyphenated variants like cancer-related. Keeps the stem if not already found.">🛈</span>
+            </label>                       
+            <label title="Precise Proximity runs individual searches for each term pair. May take longer.">
+                <input type="checkbox" id="precise_proximity" name="precise_proximity" value="true"> 
+                Precise Proximity
+                <span style="cursor: help; color: #007fad;" title="Precise Proximity runs multiple term-by-term searches for more control. ⚠️ Can take longer with many terms.">🛈</span>
+            </label>            
+
+            <button type="submit" class="button-primary">Search</button>
+            <button type="button" id="clear-input">Clear Input</button>
+        </form>
+
+        <div id="precise-progress-wrapper" style="display:none; margin-top:20px;">
+            <label id="precise-progress-label">Running comparisons...</label>
+            <progress id="precise-progress-bar" value="0" max="100" style="width: 100%; height: 20px;"></progress>
+        </div>       
+
+        <div id="proximity-controls" style="margin-top:20px; display: none;">
+            <label>Proximity Distance (1-99):</label><br>
+            <input type="number" id="proximity_distance" value="3" min="1" max="99">
+        
+            <button id="generate_proximity_search">Generate Proximity Search</button>
+            <button id="clear-proximity-search">Clear Proximity Search</button>
+        </div>        
+
+        <div id="proximity_results" style="display:none;margin-top:20px;">
+            <h3>Generated Proximity Search Query:</h3>
+            <textarea id="proximity_query_textarea" readonly rows="12" style="
+                width: 100%;
+                max-width: 100%;
+                box-sizing: border-box;
+                resize: vertical;
+                background-color: #f5f5f5;
+                border: 1px solid #ccc;
+                padding: 10px;
+                font-family: monospace;
+            "></textarea>
+            <button id="copy-proximity-search">📋 Copy to Clipboard</button>
+            <span id="copy-confirmation" style="display:none; color: green; margin-left: 10px;">✅ Copied!</span>
+            <button id="export-proximity-search-txt">Export as .txt</button>
+            <button id="export-proximity-search-doc">Export as .doc</button>
+            <div id="or-counter" style="margin-top:8px; font-size:14px;">
+                OR operators: 
+                <strong><span id="or-counter-value">0</span>/2048</strong>
+                <span id="or-warning" style="display:none; margin-left:10px; color:#ef4444; font-weight:bold;">
+                    N=2048 "OR" Limit exceeded — PubMed will likely reject this query!
+                </span>
+            </div>
+        </div>       
+
+        <div id="funny-loading"></div>
+    </div>
+
+    <div class="right-panel">
+        <h3>Variants Found:</h3>
+        <button id="clear-variants" style="margin-bottom:10px;">Clear Variants</button>
+        <button id="toggle-all-variants" style="margin-bottom:10px; display:none;">Select/Unselect All Variants</button>
+        <div id="term1-results"></div>
+        <div id="term-divider" style="display: none;">
+            <hr style="border: none; border-top: 1px solid #007fad; margin: 5px 0;">
+        </div>
+        <div id="term2-results"></div>
+    </div>
+</div>
+
+<footer>
+    <div class="footer-center">Related Expression Machine Identification (REMI 2.1) - by University Library Maastricht - 2026</div>
+    <div class="footer-session">Session ID: {{ session_id }}</div>
+    <div class="footer-mobile">REMI 2.1 (2026) by UM</div>
+</footer>
+
+<!-- Scroll-to-top button -->
+<button id="scroll-to-top" title="Back to Top">⬆️</button>
+
+<script>
+$(document).ready(function() {
+    const funnyMessages = [
+    "Sharpening the Viking hammer...",
+    "Feeding the data dragons...",
+    "Dusting off old citations...",
+    "Consulting the library ghosts...",
+    "Warming up the search engine...",
+    "Untangling Boolean spaghetti...",
+    "Refilling the coffee buffer...",
+    "Scanning parallel universes...",
+    "Bribing the algorithms...",
+    "Decrypting alien abstracts...",
+    "Aligning the knowledge planets...",
+    "Tickling the database...",
+    "Greasing the logic gears...",
+    "Herding runaway keywords...",
+    "Calibrating nerd sensors...",
+    "Summoning citation spirits...",
+    "Charging the wisdom crystals...",
+    "Optimizing the thinking hamster...",
+    "Rewriting reality.js...",
+    "Measuring infinity...",
+    "Opening dusty scrolls...",
+    "Synchronizing brainwaves...",
+    "Negotiating with rogue pixels...",
+    "Buffering genius...",
+    "Locating the missing semicolon..."
+];
+
+    let funnyInterval;
+    let allVariantsSelected = false;
+
+    function updateToggleAllButton() {
+    const btn = $('#toggle-all-variants');
+    if (!btn.length) return;
+    btn.text(allVariantsSelected ? 'Unselect All Variants' : 'Select All Variants');
+    }
+
+    function countOrOperators(query) {
+    if (!query) return 0;
+
+        // Count standalone OR tokens (case-insensitive)
+        const matches = query.match(/\bOR\b/gi);
+        return matches ? matches.length : 0;
+        }
+
+        function updateOrCounter(query) {
+            const orCount = countOrOperators(query);
+            $('#or-counter-value').text(orCount);
+
+            const counter = $('#or-counter');
+            const warning = $('#or-warning');
+
+            if (orCount > 2048) {
+                counter.css('color', '#ef4444');   // red
+                warning.show();
+            } 
+            else if (orCount > 1948) {
+                counter.css('color', '#f59e0b');   // orange (near limit)
+                warning.hide();
+            } 
+            else {
+                counter.css('color', '#1eff00');      // normal
+                warning.hide();
+            }
+        }
+
+    $('#toggle-all-variants').off('click').on('click', function () {
+    const checkboxes = $('.variant-checkbox');
+    if (!checkboxes.length) return;
+
+    allVariantsSelected = !allVariantsSelected;
+    checkboxes.prop('checked', allVariantsSelected);
+
+    updateToggleAllButton();
+    });
+
+    $('#clear-input, #clear-variants, #clear-proximity-search').hide();
+
+    function startFunnyMessages() {
+        $('#funny-loading').text(funnyMessages[Math.floor(Math.random()*funnyMessages.length)]);
+        funnyInterval = setInterval(() => {
+            $('#funny-loading').fadeOut(700, function() {
+                $(this).text(funnyMessages[Math.floor(Math.random()*funnyMessages.length)]).fadeIn(700);
+            });
+        }, 2000);
+    }
+
+    function stopFunnyMessages() {
+        clearInterval(funnyInterval);
+        $('#funny-loading').fadeOut(700, function(){
+            $(this).text('').show();
+        });
+    }
+
+    allVariantsSelected = false;
+
+    $('#search-form').submit(function(e){
+        e.preventDefault();
+        allVariantsSelected = false;
+        updateToggleAllButton();
+
+        // 💡 SHOW the progress wrapper + start polling early!
+        if ($('#precise_proximity').is(':checked')) {
+            $('#precise-progress-wrapper').show();
+            $('#precise-progress-bar').val(0);
+            $('#precise-progress-label').text('Starting precise comparisons...');
+            startPrecisePolling();
+        }
+        
+        $('#term1-results, #term2-results').empty();
+        $('#clear-variants').hide();
+        $('#toggle-all-variants').hide(); 
+        $('#term-divider').hide(); 
+        $('#proximity_query_textarea').val('');
+        $('#proximity_results').hide();
+        $('#proximity-controls').hide();
+        $('#clear-proximity-search').hide();
+        $('#clear-input').hide();
+                
+        startFunnyMessages();
+        console.log("Precise proximity checked?", $('#precise_proximity').is(':checked'));
+
+        $.ajax({
+            type: 'POST',
+            url: '/search',
+            data: $(this).serialize() + '&precise_proximity=' + ($('#precise_proximity').is(':checked') ? 'true' : 'false'),
+            success: function() {
+                const source = new EventSource('/search_stream');
+
+                source.onmessage = function(event) {
+                    if (event.data === "DONE") {
+                        source.close();
+                        stopFunnyMessages();
+                    
+                        // ✅ Hide progress bar once the query stream is really done
+                        $('#precise-progress-wrapper').fadeOut(400, () => {
+                            $('#precise-progress-bar').val(0);
+                            $('#precise-progress-label').text('');
+                        });
+                    
+                        return;
+                    }
+        
+                    try {
+                        const data = JSON.parse(event.data);
+        
+                        if (data.error) {
+                            $('#term1-results, #term2-results').html(
+                                `<p style='color:red;'>❌ ${data.error}</p>`
+                            );
+                        }
+        
+                        displayVariants(data.term1_variants, '#term1-results', 'term1');
+                        displayVariants(data.term2_variants, '#term2-results', 'term2');
+        
+                        const hasVariants = Object.keys(data.term1_variants).length > 0 || Object.keys(data.term2_variants).length > 0;
+                        if (hasVariants) {
+                            $('#proximity-controls').show();
+                            $('#term-divider').show();
+                        } else {
+                            $('#proximity-controls').hide();
+                            $('#term-divider').hide();
+                        }
+        
+                        $('#clear-variants').show();
+                        $('#clear-input').show();
+                        $('#toggle-all-variants').show();
+        
+                    } catch (e) {
+                        console.log("streaming data parse error:", event.data);
+                    }
+                };
+            },
+            error: function(xhr) {
+                stopFunnyMessages();
+        
+                let msg = "<p style='color:red;'>❌ An error occurred during search.</p>";
+                try {
+                    const response = JSON.parse(xhr.responseText);
+                    if (response.message) {
+                        msg += `<p>${response.message}</p>`;
+                    }
+                } catch (e) {
+                    msg += "<p>Could not parse error response.</p>";
+                }
+        
+                $('#term1-results, #term2-results').html(msg);
+                $('#clear-variants').show();
+                $('#clear-input').show();
+            }
+        });    
+        
+    });
+
+    function displayVariants(data, container, termGroup){
+        for (let term in data) {
+            let termID = term.replace(/\s+/g, '_');
+            let groupClass = termGroup === 'term1' ? 'term1-box' : 'term2-box';
+    
+            let html = `<button class='collapsible ${groupClass}'>${term} (${data[term].length})</button>
+                <div class='content'>
+                    <button class="select-all-btn" data-term="${termID}">Select/Unselect All</button>
+                    <ul id="list-${termID}">`;
+            data[term].forEach(v => {
+                html += `<li><input type='checkbox' class='variant-checkbox' data-term='${termID}' value='${v.word}'> ${v.word} (${v.count})</li>`;
+            });
+            html += "</ul></div>";
+            $(container).append(html);
+        }
+    }    
+
+    $(document).on('click', '.collapsible', function () {
+        const content = $(this).next('.content');
+        content.slideToggle(300, function () {
+            if (content.is(':visible')) {
+                const topOffset = content.offset().top;
+                const scrollTarget = topOffset - 50; // adjust this buffer if needed
+                const currentScroll = $(window).scrollTop();
+    
+                // Only scroll if top of content is below current view
+                if (topOffset > currentScroll + 50) {
+                    $('html, body').animate({ scrollTop: scrollTarget }, 400);
+                }
+            }
+        });
+    });
+
+    $(document).on('click', '.select-all-btn', function(){
+        const termID = $(this).data('term');
+        const checkboxes = $(`#list-${termID} .variant-checkbox`);
+        const allChecked = checkboxes.length === checkboxes.filter(':checked').length;
+        checkboxes.prop('checked', !allChecked);
+    });
+
+    $('#generate_proximity_search').click(function(){
+        const t1 = $('#term1-results input.variant-checkbox:checked').map((_,e)=>e.value.replace(' [+hyphen]', '')).get();
+        const t2 = $('#term2-results input.variant-checkbox:checked').map((_,e)=>e.value.replace(' [+hyphen]', '')).get();
+        const dist = $('#proximity_distance').val();
+        const dateFrom = $('#date_from_input').val();
+        const dateTo = $('#date_to_input').val();
+    
+        if (!t1.length || !t2.length) {
+            return alert('Select at least one variant per field.');
+        }
+    
+        $.ajax({
+            type: 'POST',
+            url: '/generate_proximity_search',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                term1_variants: t1,
+                term2_variants: t2,
+                proximity_distance: dist,
+                date_from: dateFrom,
+                date_to: dateTo
+            }),
+            success: res => {
+                const fullQuery = res.proximity_query;
+                $('#proximity_query_textarea').val(fullQuery);
+                $('#proximity_results').show();
+                $('#clear-proximity-search').show();
+            
+                // Store full query for export
+                $('#proximity_query_textarea').data('raw-query', fullQuery);
+                updateOrCounter(fullQuery);
+            }
+            
+        });
+    });    
+
+    $('#clear-variants').click(() => {
+        $('#term1-results,#term2-results').empty();
+        $('#clear-variants').hide();
+        $('#toggle-all-variants').hide(); 
+        $('#term-divider').hide(); 
+        allVariantsSelected = false;
+    });
+
+    $('#clear-proximity-search').click(() => {
+        $('#proximity_query_chunks').empty();   // ok if missing
+        $('#proximity_output').val('');         // ok if missing
+        $('#proximity_results').hide();
+        $('#clear-proximity-search').hide();
+        $('#proximity_query_textarea').val('');
+        $('#proximity_query_textarea').removeData('raw-query');
+        // ✅ reset OR counter
+        updateOrCounter('');
+    });    
+
+    $('#clear-input').click(() => {
+        $('#term1').val('');
+        $('#term2').val('');
+        $('#date_from_input').val('');
+        $('#date_to_input').val('');
+
+        // ✅ keep Exclude Hyphenated Words ON
+        $('#exclude_hyphens').prop('checked', true);
+
+        // ✅ turn Precise Proximity OFF
+        $('#precise_proximity').prop('checked', false);
+
+        $('#clear-input').hide();  
+    });
+
+    $('#proximity_query_textarea').click(function() {
+        $(this).select();
+    });
+
+    function splitAndFormatQuery(rawQuery, dist) {
+        const proximityTerms = rawQuery.match(/"[^"]+?"\[tiab:~\d+\]/g) || [];
+    
+        const chunks = [];
+        let currentChunk = "";
+        let currentChars = 0;
+        let operatorCount = 0;
+        let termCount = 0;
+        let chunkMeta = [];
+    
+        proximityTerms.forEach((term, index) => {
+            const termLen = term.length + 4; // " OR "
+            const isOp = termCount > 0;
+    
+            if (
+                currentChars + termLen > 180000 ||
+                operatorCount + (isOp ? 1 : 0) > 200 ||
+                termCount + 1 > 3500
+            ) {
+                chunks.push(currentChunk.trim().replace(/\s*OR\s*$/, ""));
+                chunkMeta.push({ chars: currentChars, ops: operatorCount, terms: termCount });
+                currentChunk = "";
+                currentChars = 0;
+                operatorCount = 0;
+                termCount = 0;
+            }
+    
+            currentChunk += term + " OR ";
+            currentChars += termLen;
+            if (isOp) operatorCount++;
+            termCount++;
+        });
+    
+        if (currentChunk.trim()) {
+            chunks.push(currentChunk.trim().replace(/\s*OR\s*$/, ""));
+            chunkMeta.push({ chars: currentChars, ops: operatorCount, terms: termCount });
+        }
+    
+        let exportText = "";
+        chunks.forEach((chunk, i) => {
+            exportText += "----------------------------------------\n";
+            exportText += `Query ${i + 1} (characters = ${chunkMeta[i].chars}, operators = ${chunkMeta[i].ops}, terms = ${chunkMeta[i].terms})\n`;
+            exportText += "----------------------------------------\n";
+            exportText += chunk + "\n";
+            exportText += "----------------------------------------\n\n";
+        });
+    
+        return exportText;
+    }
+    
+    function startPrecisePolling() {
+        const pollInterval = 1000;
+    
+        const intervalId = setInterval(() => {
+            $.get('/precise_progress', function(data) {
+                if (!data || !data.total || !data.current) return;
+    
+                const percent = Math.floor((data.current / data.total) * 100);
+                $('#precise-progress-bar').val(percent);
+                $('#precise-progress-label').text(`Finished comparison: ${data.current} / ${data.total}`);
+    
+                // ✅ Hide bar and stop polling when done
+                if (data.current >= data.total) {
+                    clearInterval(intervalId);
+    
+                    $('#precise-progress-label').text('✅ All comparisons complete!');
+                    setTimeout(() => {
+                        $('#precise-progress-wrapper').fadeOut(400, () => {
+                            $('#precise-progress-bar').val(0);
+                            $('#precise-progress-label').text('');
+                        });
+                    }, 1500);
+                }
+            });
+        }, pollInterval);
+    }    
+
+    $('#export-proximity-search').click(() => {
+        const text = $('#proximity_query_textarea').val();
+        if (text) {
+            const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(blob);
+            link.download = "proximity_query.txt";
+            link.click();
+        }
+    });
+
+    $('#export-proximity-search-txt').click(() => {
+        const raw = $('#proximity_query_textarea').data('raw-query');
+        if (!raw) return;
+        const formatted = splitAndFormatQuery(raw);
+        const blob = new Blob([formatted], { type: "text/plain;charset=utf-8" });
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = "proximity_query.txt";
+        link.click();
+    });
+    
+    $('#export-proximity-search-doc').click(() => {
+        const raw = $('#proximity_query_textarea').data('raw-query');
+        if (!raw) return;
+        const formatted = splitAndFormatQuery(raw);
+        const blob = new Blob([formatted], { type: "application/msword;charset=utf-8" });
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = "proximity_query.doc";
+        link.click();
+    });    
+
+    $(window).scroll(function() {
+        $('#scroll-to-top').toggle($(this).scrollTop() > 300);
+    });
+
+    $('#scroll-to-top').click(function() {
+        $('html, body').animate({ scrollTop: 0 }, 600);
+        return false;
+    });
+
+    $(document).on('click', '.copy-chunk-btn', function() {
+        const targetId = $(this).data('target');
+        const text = $(`#${targetId}`).val();
+        navigator.clipboard.writeText(text).then(() => {
+            $('#copy-confirmation').fadeIn().delay(2000).fadeOut();
+        }).catch(err => {
+            alert("Failed to copy: " + err);
+        });
+    });
+
+    $('#copy-proximity-search').click(function () {
+        const text = $('#proximity_query_textarea').val();
+        if (!text) return alert("No query to copy.");
+        
+        navigator.clipboard.writeText(text).then(() => {
+            $('#copy-confirmation').fadeIn().delay(2000).fadeOut();
+        }).catch(err => {
+            alert("Failed to copy: " + err);
+        });
+    });
+
+});
+</script>
+
+</body>
+</html>

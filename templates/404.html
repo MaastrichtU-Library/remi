@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>404 - Page Not Found | REMI 2.1</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&amp;display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .error-box {
+            text-align: center;
+            padding: 40px 20px;
+        }
+
+        .error-icon {
+            font-size: 80px;
+            color: #ef5350;
+        }
+
+        .error-heading {
+            font-size: 48px;
+            margin: 10px 0;
+            color: #001c3d;
+        }
+
+        .error-text {
+            font-size: 18px;
+            color: #444;
+            margin-bottom: 30px;
+        }
+
+        .button-primary {
+            text-decoration: none;
+            padding: 10px 20px;
+            font-size: 16px;
+            display: inline-block;
+        }
+    </style>
+</head>
+<body>
+
+<nav>
+    <div class="nav-links">
+        <a href="/" class="{% if request.path == '/' %}active{% endif %}">Home</a>
+        <a href="/keyword_search" class="{% if request.path == '/keyword_search' %}active{% endif %}">Keyword Search</a>
+        <a href="/multiple_search" class="{% if request.path == '/multiple_search' %}active{% endif %}">Proximity Search</a>
+        <a href="/contact" class="{% if request.path == '/contact' %}active{% endif %}">Contact</a>
+    </div>
+    <div class="logo">
+        <img src="{{ url_for('static', filename='UMlibrarywebsite.webp') }}" alt="Maastricht University">
+        <span>REMI 2.1</span>
+    </div>
+</nav>
+
+<div class="container">
+    <div class="left-panel" style="width: 100%; max-width: 700px; margin: auto;">
+        <div class="error-box">
+            <div class="error-icon">🚫</div>
+            <div class="error-heading">404 - Not Found</div>
+            <div class="error-text">Oops! The page you're looking for doesn’t exist or has been moved.</div>
+            <a href="/" class="button-primary">⬅ Back to Home</a>
+        </div>
+    </div>
+</div>
+
+<footer>
+    <div class="footer-center">REMI 2.1 – University Library Maastricht – 2026</div>
+    <div class="footer-session">Session ID: {{ session_id }}</div>
+    <div class="footer-mobile">REMI 2.1 (2026) by UM</div>
+</footer>
+
+</body>
+</html>
