@@ -1,10 +1,16 @@
 # REMI 2.1 by Maastricht University Library
 
-REMI 2.1 (Related Expression Machine Identification) is a web application that helps identify related expressions for PubMed searches.
-This tool helps researchers explore keyword variants and proximity operators in PubMed searches efficiently.
-This tool is created by Maastricht University library under a CC BY-NC-SA 4.0 license. 
-This means you can use it for non-commercial purposes only and you can not make variants of it without our permission.
+## Licence
 
+The REMI source code is licensed under the
+[GNU Affero General Public License v3.0](LICENSE).
+
+Documentation and original visual materials are licensed under
+[CC BY-NC-SA 4.0](LICENSE-CONTENT.md).
+
+Maastricht University names, logos, trademarks, and other third-party materials are excluded from these licences.
+
+REMI 2.1 (Related Expression Machine Identification) is a web application that helps identify related expressions for PubMed searches.This tool helps researchers explore keyword variants and proximity operators in PubMed searches efficiently.
 This short guide explains how to run REMI on your own computer. No programming experience is required.
 
 ## What you need
