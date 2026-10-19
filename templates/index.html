@@ -74,7 +74,7 @@
 
         <h3>Keyword Search</h3>
         <p>
-            Enter a single wildcard term like <code>canc*</code> to find variants such as <em>cancer</em>, <em>cancer-treatment</em>, <em>cancers</em>, or <em>cancerous</em>.<br><br>
+            Enter a single wildcard term like <code>canc*</code> to find variants such as <em>cancer</em>, <em>cancer-treatment</em>, <em>cancers</em>, or <em>cancerous</em>.<br><br> Phrases work too, e.g. <code>"hand off*"</code> finds <em>hand-off</em>, <em>hand-offs</em>, and more. A * can also be used inside a word: <code>randomi*ation</code> finds <em>randomisation</em> and <em>randomization</em>.<br><br>
             <strong>Options:</strong><br>
             • <strong>Date range:</strong> Filter results using From/To fields.<br>
             • <strong>Exclude hyphenated words:</strong> Skip hyphenated variants like <em>cancer-treatment</em>.<br>
@@ -86,7 +86,7 @@
         <p>
             Enter two sets of terms, combining wildcard and non-wildcard expressions — e.g. <code>stroke OR cerebrovasc* AND rehab* OR recove*</code> — to explore all variants and create proximity-based combinations such as <em>"stroke rehabilitation"[tiab:~3]</em> or <em>"cerebrovascular recovery"[tiab:~3]</em>.<br><br>
 
-            Non-wildcard terms (e.g., <code>stroke</code>) are included in the final search but no variants are discovered or excluded for them.<br><br>
+            Non-wildcard terms (e.g., <code>stroke</code>) are included in the final search but no variants are discovered or excluded for them.<br><br> Phrases can be entered with quotes or a hyphen (e.g., <code>"hand off*"</code> or <code>hand-off*</code>); their variants are written with a hyphen (<em>hand-off</em>, <em>hand-offs</em>). Within a proximity search, PubMed searches the words of a phrase as separate words, so these clauses may retrieve some extra records.<br><br>
 
             <strong>Options:</strong><br>
             • <strong>Date range:</strong> Limit results to a publication timeframe.<br>
@@ -100,18 +100,6 @@
         </p>        
     </div>
 </div>
-<script>
-    $(document).ready(function () {
-        $('.logo').css('cursor', 'pointer').on('click', function () {
-            $('#memory-modal').fadeIn();
-        });
-    
-        $('#close-memory, #memory-backdrop').on('click', function () {
-            $('#memory-modal').fadeOut();
-            $('#memory-modal iframe').attr('src', '/memory_game'); // reset game on close
-        });
-    });
-</script>
 
 
 <footer>

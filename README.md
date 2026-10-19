@@ -161,9 +161,12 @@ SECRET_KEY = paste_your_new_secret_key_here
 # Personal NCBI API key used for PubMed requests.
 # Create it in the API Key Management section of your NCBI account settings.
 NCBI_API_KEY = paste_your_ncbi_api_key_here
+
+# Optional: a general contact email address for NCBI (not a personal one).
+CONTACT_EMAIL =
 ```
 
-Replace both placeholder values with the keys you created. Do not add quotation marks around the keys.
+Replace both placeholder values with the keys you created. `CONTACT_EMAIL` is optional; you can leave it empty. REMI will not start until `SECRET_KEY` contains a real key. Do not add quotation marks around the keys.
 
 Save the file and make sure your editor has not renamed it to `config.ini.txt`.
 

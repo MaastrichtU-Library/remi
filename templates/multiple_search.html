@@ -44,7 +44,7 @@
             <label>
                 <input type="checkbox" id="exclude_hyphens" name="exclude_hyphens" value="true" checked>
                 Exclude Hyphenated Words
-                <span style="cursor: help; color: #007fad;" title="Omits hyphenated variants like cancer-related. Keeps the stem if not already found.">🛈</span>
+                <span style="cursor: help; color: #007fad;" title="Omits hyphenated variants like cancer-related. Keeps the stem if not already found. Phrases you enter yourself, like hand-off*, keep their hyphen.">🛈</span>
             </label>                       
             <label title="Precise Proximity runs individual searches for each term pair. May take longer.">
                 <input type="checkbox" id="precise_proximity" name="precise_proximity" value="true"> 
@@ -87,11 +87,12 @@
             <button id="export-proximity-search-doc">Export as .doc</button>
             <div id="or-counter" style="margin-top:8px; font-size:14px;">
                 OR operators: 
-                <strong><span id="or-counter-value">0</span>/2048</strong>
+                <strong><span id="or-counter-value">0</span>/<span class="or-limit">2048</span></strong>
                 <span id="or-warning" style="display:none; margin-left:10px; color:#ef4444; font-weight:bold;">
-                    N=2048 "OR" Limit exceeded — PubMed will likely reject this query!
+                    N=<span class="or-limit">2048</span> "OR" Limit exceeded — PubMed will likely reject this query!
                 </span>
             </div>
+            <div id="phrase-warning" style="display:none; margin-top:10px; padding:8px 12px; border-left:4px solid #f59e0b; background:#fffbeb; color:#333; font-size:14px; line-height:1.45;"></div>
         </div>       
 
         <div id="funny-loading"></div>
@@ -149,6 +150,11 @@ $(document).ready(function() {
 ];
 
     let funnyInterval;
+    // Maximum number of OR operators PubMed accepts in one query. Used for the on-screen
+    // warning AND for splitting exports, so both always agree. Change only this value.
+    const PUBMED_MAX_OR = 2048;
+    $('.or-limit').text(PUBMED_MAX_OR);
+
     let allVariantsSelected = false;
 
     function updateToggleAllButton() {
@@ -172,11 +178,11 @@ $(document).ready(function() {
             const counter = $('#or-counter');
             const warning = $('#or-warning');
 
-            if (orCount > 2048) {
+            if (orCount > PUBMED_MAX_OR) {
                 counter.css('color', '#ef4444');   // red
                 warning.show();
             } 
-            else if (orCount > 1948) {
+            else if (orCount > PUBMED_MAX_OR - 100) {
                 counter.css('color', '#f59e0b');   // orange (near limit)
                 warning.hide();
             } 
@@ -306,7 +312,8 @@ $(document).ready(function() {
                     msg += "<p>Could not parse error response.</p>";
                 }
         
-                $('#term1-results, #term2-results').html(msg);
+                $('#term1-results').html(msg);   // show the error once
+                $('#term2-results').empty();
                 $('#clear-variants').show();
                 $('#clear-input').show();
             }
@@ -354,6 +361,30 @@ $(document).ready(function() {
         checkboxes.prop('checked', !allChecked);
     });
 
+    // PubMed searches the words of a phrase separately inside a proximity clause.
+    // Explain this with an example from the user's own search (built as text nodes, not HTML).
+    function renderPhraseWarning(w) {
+        const box = $('#phrase-warning');
+        box.empty();
+        if (!w) { box.hide(); return; }
+        const txt = s => document.createTextNode(s);
+        const em = s => $('<em>').text(s);
+        const d = String(w.distance);
+        box.append($('<strong>').text('Note: '),
+                   txt('PubMed does not keep phrases together in proximity searches. A clause such as '),
+                   $('<code>').text(w.clause),
+                   txt(' finds records in which '));
+        w.words.forEach((word, i) => {
+            if (i > 0) box.append(txt(i < w.words.length - 1 ? ', ' : (w.words.length > 2 ? ', and ' : ' and ')));
+            box.append(em(word));
+        });
+        box.append(txt(` occur in any order with no more than ${d} word${d === '1' ? '' : 's'} between them, ` +
+                       'not only records in which the phrase '),
+                   em(w.phrase), txt(' appears near '), em(w.other),
+                   txt('. The results may therefore include some irrelevant records.'));
+        box.show();
+    }
+
     $('#generate_proximity_search').click(function(){
         const t1 = $('#term1-results input.variant-checkbox:checked').map((_,e)=>e.value.replace(' [+hyphen]', '')).get();
         const t2 = $('#term2-results input.variant-checkbox:checked').map((_,e)=>e.value.replace(' [+hyphen]', '')).get();
@@ -385,6 +416,7 @@ $(document).ready(function() {
                 // Store full query for export
                 $('#proximity_query_textarea').data('raw-query', fullQuery);
                 updateOrCounter(fullQuery);
+                renderPhraseWarning(res.phrase_warning);
             }
             
         });
@@ -405,6 +437,7 @@ $(document).ready(function() {
         $('#clear-proximity-search').hide();
         $('#proximity_query_textarea').val('');
         $('#proximity_query_textarea').removeData('raw-query');
+        renderPhraseWarning(null);
         // ✅ reset OR counter
         updateOrCounter('');
     });    
@@ -444,7 +477,7 @@ $(document).ready(function() {
     
             if (
                 currentChars + termLen > 180000 ||
-                operatorCount + (isOp ? 1 : 0) > 200 ||
+                operatorCount + (isOp ? 1 : 0) > PUBMED_MAX_OR ||
                 termCount + 1 > 3500
             ) {
                 chunks.push(currentChunk.trim().replace(/\s*OR\s*$/, ""));
