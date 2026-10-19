@@ -19,32 +19,121 @@ import config  # this loads config.py, which handles the two secrets in config.t
 _cleanup_lock = threading.Lock()
 _last_cleanup_ts = 0
 
-ALLOWED_RE = re.compile(r'^[A-Za-z0-9*\s]+$')
+ALLOWED_RE = re.compile(r'^[A-Za-z0-9*\s"\-]+$')
+
+# A term is either a single word (e.g. vaccin*) or a phrase whose words are
+# separated by spaces or hyphens (e.g. "hand off*" or hand-off*). In record
+# text, the words of a phrase may be separated by a space or a hyphen; variants
+# of phrases are always written with hyphens (hand-off, hand-offs).
+TERM_TOKEN_RE = re.compile(r'"[^"]*"|\S+')
+WORD_SEP_RE = re.compile(r'[\s-]+')
 
 def norm_ws(s: str) -> str:
     # collapse whitespace only, do NOT touch hyphens
     return re.sub(r'\s+', ' ', s.strip().lower())
+
+def split_or_terms(text):
+    """Split a field into terms on OR, without splitting inside double quotes."""
+    terms, buffer = [], []
+    for token in TERM_TOKEN_RE.findall(text or ''):
+        if token.lower() == 'or':
+            if buffer:
+                terms.append(' '.join(buffer))
+            buffer = []
+        else:
+            buffer.append(token)
+    if buffer:
+        terms.append(' '.join(buffer))
+    return terms
+
+def parse_term(raw):
+    """Describe one user-entered term (a single word or a phrase, without OR)."""
+    text = raw.strip()
+    if len(text) >= 2 and text.startswith('"') and text.endswith('"'):
+        text = text[1:-1].strip()
+    text = text.lower()
+    words = [w for w in WORD_SEP_RE.split(text) if w]
+    is_phrase = len(words) > 1
+    if is_phrase:
+        query = '"' + ' '.join(words) + '"[tiab]'   # PubMed treats "hand off*" and hand-off* alike
+        base = '-'.join(words).rstrip('*')
+        seed = ' '.join(words)
+    else:
+        query = f"{text}[tiab]"
+        base = text.rstrip('*')
+        seed = text
+    return {
+        'text': text,                 # quotes removed, lower case
+        'words': words,
+        'is_phrase': is_phrase,
+        'is_wildcard': '*' in text,   # PubMed allows wildcards anywhere: colo*r, "colo* cancer*"
+        'query': query,               # PubMed form, e.g. "hand off*"[tiab]
+        'base': base,                 # group name, e.g. hand-off
+        'seed': seed,                 # canonical seed, e.g. hand off*
+        'literal': norm_ws(text),     # non-wildcard terms keep the form the user typed
+    }
+
+def phrase_pattern(words, implicit_truncation=False):
+    """Regex for a phrase whose words may be separated by spaces or hyphens.
+    Each word is a group, so a wildcard can be used in any word ("colo* cancer*")."""
+    parts = [re.escape(w).replace(r'\*', r'[\w-]*') for w in words]
+    if implicit_truncation:
+        parts[-1] += r'[\w-]*'
+    core = r'[-\s]+'.join(f'({part})' for part in parts)
+    return re.compile(rf'\b{core}\b')
+
+def phrase_variant_key(groups, exclude_hyphens):
+    """Write a matched phrase with hyphens (hand off -> hand-off). A hyphen that a
+    wildcard added to the last word (hand-off-related) is handled like any
+    hyphenated variant: dropped when Exclude Hyphenated Words is on, marked otherwise."""
+    words = [g.lower() for g in groups]
+    if exclude_hyphens:
+        words[-1] = words[-1].split('-', 1)[0]
+        return '-'.join(words)
+    marker = '__H__' if any('-' in w for w in words) else ''
+    return marker + '-'.join(words)
 
 def validate_query_text(raw: str) -> str:
     if raw is None:
         raise ValueError("Empty input.")
 
     text = raw.strip()
+    if not text:
+        raise ValueError("Empty input.")
 
-    # 1) Only ASCII alnum, whitespace, and *
+    # 1) Only ASCII alnum, whitespace, *, hyphens, and double quotes
     if not ALLOWED_RE.match(text):
-        raise ValueError("Only A–Z, 0–9, spaces/newlines, and * are allowed. No other characters.")
+        raise ValueError('Only A–Z, 0–9, spaces/newlines, *, hyphens (-), and double quotes (") are allowed. No other characters.')
 
-    # 2) Validate each token (split on whitespace/newlines)
-    for token in re.split(r'\s+', text):
-        if not token:
-            continue
+    if text.count('"') % 2:
+        raise ValueError('Unmatched double quote. Put quotes around a whole phrase, e.g. "hand off*".')
 
-        # PubMed requires >=4 characters before the first wildcard
-        if '*' in token:
-            prefix = token.split('*', 1)[0]
+    # 2) Validate each term (split on OR, keeping quoted phrases together)
+    for term in split_or_terms(text):
+        inner = term
+        if '"' in term:
+            if term.count('"') != 2 or not (term.startswith('"') and term.endswith('"')):
+                raise ValueError(f'Put double quotes around a whole term, e.g. "hand off*" (problem: {term}).')
+            inner = term[1:-1].strip()
+            if not inner:
+                raise ValueError('Empty quotes ("") are not allowed.')
+
+        if re.search(r'(?<![A-Za-z0-9])-|-(?![A-Za-z0-9])', inner):
+            raise ValueError(f"A hyphen must join two words, e.g. hand-off* (problem: '{term}').")
+
+        words = [w for w in WORD_SEP_RE.split(inner) if w]
+        if any(not w.replace('*', '') for w in words):
+            raise ValueError(f"A * must be part of a word, e.g. vaccin* (problem: '{term}').")
+        if len(words) > 1:
+            # Phrase: PubMed accepts wildcards in any word ("colo* cancer*") and phrases
+            # such as "hand off*", so the 4-character rule applies to the phrase as a whole.
+            if '*' in inner and len(WORD_SEP_RE.sub('', inner.split('*', 1)[0])) < 4:
+                raise ValueError(f"Wildcard terms must have at least 4 characters before the first * (problem: '{term}').")
+        elif '*' in inner:
+            # PubMed requires >=4 characters before the first wildcard
+            prefix = inner.split('*', 1)[0]
             if len(prefix) < 4:
-                raise ValueError(f"Wildcard terms must have at least 4 characters before the first * (problem: '{token}').")
+                raise ValueError(f"Wildcard terms must have at least 4 characters before the first * (problem: '{term}').")
 
     return text
 
@@ -57,7 +146,7 @@ os.environ['NCBI_API_KEY'] = config.NCBI_API_KEY
 
 # Global query throttle
 QUERY_LOCK = threading.Lock()
-GLOBAL_THROTTLE_DELAY = 0.12  # max ~8 queries/sec
+GLOBAL_THROTTLE_DELAY = 0.12 if config.NCBI_API_KEY else 0.34  # NCBI: 10 req/s with an API key, 3 without
 
 # Per-session pacing
 MIN_SESSION_DELAY = 1.0  # seconds between same-session queries
@@ -172,10 +261,12 @@ def find_precise_variants(term1_list, term2_list, date_from=None, date_to=None, 
             # Merge results into all_variants
             for key in ['term1', 'term2']:
                 for base, variants in result[key].items():
-                    if base not in all_variants[key]:
-                        all_variants[key][base] = variants
-                    else:
-                        all_variants[key][base].update(variants)
+                    merged = all_variants[key].setdefault(base, Counter())
+                    for word, count in variants.items():
+                        if count == 9999:   # non-wildcard term: a marker, not a frequency
+                            merged[word] = 9999
+                        else:
+                            merged[word] += count
 
             # Now update precise_progress — once per comparison (not per iteration)
             completed += 1
@@ -302,14 +393,24 @@ def extract_title_abstract(pmid_chunk):
     import requests
 
     pmid_str = ','.join(pmid_chunk)
-    efetch = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&retmode=xml&id={pmid_str}"
-    headers = {"User-Agent": "REMI/2.0 (rinus.verdonschot@maastrichtuniversity.nl)"}
+    efetch = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+    params = {"db": "pubmed", "retmode": "xml", "id": pmid_str, "tool": "REMI"}
+    if config.NCBI_API_KEY:
+        params["api_key"] = config.NCBI_API_KEY
+    contact = getattr(config, 'CONTACT_EMAIL', '')
+    if contact:
+        params["email"] = contact
+    headers = {"User-Agent": "REMI/2.1" + (f" ({contact})" if contact else "")}
+
+    def element_text(elem):
+        # itertext() also returns text inside <i>, <sup>, <sub> etc.; elem.text stops at the first tag
+        return ''.join(elem.itertext()) if elem is not None else ""
 
     last_exception = None
 
     for attempt in range(3):
         try:
-            response = requests.get(efetch, headers=headers, timeout=10)
+            response = requests.get(efetch, params=params, headers=headers, timeout=10)
             response.raise_for_status()
 
             root = ET.fromstring(response.content)
@@ -317,14 +418,14 @@ def extract_title_abstract(pmid_chunk):
 
             for article in root.findall("PubmedArticle"):
                 pmid = article.find("MedlineCitation/PMID").text
-                title = article.find("MedlineCitation/Article/ArticleTitle").text or ""
+                title = element_text(article.find("MedlineCitation/Article/ArticleTitle"))
                 abstract_section = article.find("MedlineCitation/Article/Abstract")
                 abstract_text = ""
 
                 if abstract_section is not None:
                     pieces = []
                     for elem in abstract_section.findall("AbstractText"):
-                        part = elem.text or ""
+                        part = element_text(elem)
                         label = elem.attrib.get("Label")
                         if label:
                             pieces.append(f"{label}: {part}")
@@ -334,7 +435,7 @@ def extract_title_abstract(pmid_chunk):
                 else:
                     abstract_text = "No abstract"
 
-                keywords = [kw.text for kw in article.findall(".//Keyword") if kw.text]
+                keywords = [t for t in (element_text(kw) for kw in article.findall(".//Keyword")) if t]
                 full_text = f"{title} {abstract_text} {' '.join(keywords)}".lower()
 
                 articles.append({"pmid": pmid, "full_text": full_text})
@@ -390,7 +491,53 @@ def format_variants_for_display(variants_dict):
 
 # ---------- KEYWORD VARIANT LOGIC ----------
 
+def find_keyword_phrase_variants(info, date_from=None, date_to=None, exclude_hyphens=False):
+    """Keyword Search for a phrase such as "hand off*" or hand-off*."""
+    words = info['words']
+    pattern = phrase_pattern(words, implicit_truncation=not info['is_wildcard'])
+    found_variants = Counter()
+    seen_variants = set()
+    query = info['query']
+
+    iteration = 0
+    try:
+        while iteration < 10:
+            pmids = get_pmids(query, date_from=date_from, date_to=date_to)
+            if not pmids:
+                break
+
+            new_found = False
+            for pmid_chunk in chunk_pmids(pmids):
+                articles = extract_title_abstract(pmid_chunk)
+                for article in articles:
+                    text = article.get('full_text', '').lower()
+                    for groups in pattern.findall(text):
+                        variant_key = phrase_variant_key(groups, exclude_hyphens)
+                        if variant_key not in seen_variants:
+                            seen_variants.add(variant_key)
+                            new_found = True
+                        found_variants[variant_key] += 1
+
+            if not new_found:
+                break
+
+            clean_exclusions = {v.replace('__H__', '').replace('-', ' ') for v in seen_variants}
+            exclusions = " NOT (" + " OR ".join([f'\"{v}\"[tiab]' for v in sorted(clean_exclusions)]) + ")"
+            query = f"{info['query']}{exclusions}"
+            print(f"[DEBUG] Iteration {iteration + 1} - PubMed query:\n{query}\n")
+            iteration += 1
+
+        return [{"word": w.replace('__H__', ''), "count": c} for w, c in found_variants.most_common()]
+
+    except Exception as e:
+        partials = [{"word": w.replace('__H__', ''), "count": c} for w, c in found_variants.most_common()]
+        raise PartialResultsError(str(e), partials)
+
 def find_keyword_variants(term, date_from=None, date_to=None, exclude_hyphens=False):
+    info = parse_term(term)
+    if info['is_phrase']:
+        return find_keyword_phrase_variants(info, date_from, date_to, exclude_hyphens)
+    term = info['text']  # quotes removed
     term_clean = term.strip().lower()
 
     # Build a regex that treats '*' as "0+ word chars"
@@ -476,24 +623,29 @@ def find_combined_variants(term1_query, term2_query, date_from=None, date_to=Non
     literal_seeds = {'term1': set(), 'term2': set()}  # exact (non-wildcard) user terms
     
     seed_to_base = {'term1': {}, 'term2': {}}
+    phrase_seeds = {'term1': {}, 'term2': {}}      # phrase seed -> (words, compiled regex)
+    phrase_variants = {'term1': set(), 'term2': set()}  # variants that came from phrase seeds
 
     for key in ['term1', 'term2']:
         query_string = term1_query if key == 'term1' else term2_query
-        for t in re.split(r'\s+or\s+', query_string, flags=re.I):
-            t = t.strip()
-            if not t:
+        for t in split_or_terms(query_string):
+            info = parse_term(t)
+            if not info['text']:
                 continue
-            if t.endswith('*'):
-                seed = t.lower()  # keep full wildcard seed e.g. "tumo*r*"
-                base = t.rstrip('*').lower()  # key name in variants dict (we can keep this)
+            if info['is_wildcard']:
+                seed = info['seed']  # keep full wildcard seed e.g. "tumo*r*" or "hand off*"
+                if seed in seed_to_base[key]:
+                    continue  # same term entered twice, e.g. "hand off*" and hand-off*
+                base = info['base']  # key name in variants dict, e.g. "tumo*r" or "hand-off"
                 variants[key][base] = Counter()
                 truncated_terms[key].append(seed)          # store seed, not base
                 wildcard_seeds[key].add(seed)
                 seed_to_base[key][seed] = base
+                if info['is_phrase']:
+                    phrase_seeds[key][seed] = (info['words'], phrase_pattern(info['words']))
 
             else:
-                word = t.lower().strip()
-                word_norm = norm_ws(word)   # normalize spaces/hyphens same way as matches                            
+                word_norm = info['literal']   # as typed: spaces collapsed, hyphens kept
                 variants[key][word_norm] = Counter({word_norm: 9999})
 
                 # Track literal seeds separately so they won't be excluded later
@@ -503,10 +655,9 @@ def find_combined_variants(term1_query, term2_query, date_from=None, date_to=Non
                 # because discovered_variants are used to build NOT-exclusions.
 
     def format_truncated_only(query_string):
-        terms = [t.strip() for t in re.split(r'\s+or\s+', query_string, flags=re.I) if t.strip()]
-        return " OR ".join([f"{t}[tiab]" for t in terms])
+        return " OR ".join(parse_term(t)['query'] for t in split_or_terms(query_string))
 
-    def build_exclusion_clause(all_discovered):
+    def build_exclusion_clause(all_discovered, key):
         if not all_discovered:
             return ""
 
@@ -517,6 +668,8 @@ def find_combined_variants(term1_query, term2_query, date_from=None, date_to=Non
                 continue
             if clean.startswith('"') and clean.endswith('"'):
                 clean = clean[1:-1]
+            if w in phrase_variants[key]:
+                clean = clean.replace('-', ' ')  # phrase search, as in "hand off*"[tiab]
             clean_terms.append(f'"{clean}"[tiab]')
 
         if not clean_terms:
@@ -525,44 +678,42 @@ def find_combined_variants(term1_query, term2_query, date_from=None, date_to=Non
 
     term1_base = format_truncated_only(term1_query)
     term2_base = format_truncated_only(term2_query)
-    term1_exclusions = set()
-    term2_exclusions = set()
+    exclusions = {'term1': set(), 'term2': set()}
+    processed_pmids = set()
 
-    iteration = 0
-    while iteration < 21:
-        full_query = (
-            f"(({term1_base}){build_exclusion_clause(term1_exclusions)}) "
-            f"AND "
-            f"(({term2_base}){build_exclusion_clause(term2_exclusions)})"
-        )
-        print(f"[DEBUG] Iteration {iteration + 1} - Combined PubMed query:\n{full_query}\n")
+    def clause(key, with_exclusions):
+        base = term1_base if key == 'term1' else term2_base
+        excl = build_exclusion_clause(exclusions[key], key) if with_exclusions else ""
+        return f"(({base}){excl})"
 
-        pmids = get_pmids(full_query, date_from=date_from, date_to=date_to)
-        if not pmids:
-            break
-
-        new_found = False
-        for pmid_chunk in chunk_pmids(pmids):
+    def mine(pmids):
+        """Harvest variants of both concepts from records not read before.
+        Returns, per concept, whether new variants were found."""
+        new = {'term1': False, 'term2': False}
+        fresh = [p for p in pmids if p not in processed_pmids]
+        processed_pmids.update(fresh)
+        for pmid_chunk in chunk_pmids(fresh):
             articles = extract_title_abstract(pmid_chunk)
             for article in articles:
                 text = article['full_text']
                 for key, term_list in [('term1', truncated_terms['term1']), ('term2', truncated_terms['term2'])]:
                     for seed in term_list:
                         base = seed_to_base[key].get(seed, seed.rstrip('*'))
-                        base_norm = seed.replace('*', '').lower()
 
-                        if ' ' in seed:
-                            parts = seed.split()
-                            if len(parts) == 2:
-                                prefix, wildcard = parts
-                                pattern = rf"\b{re.escape(prefix)}[-\s]+{re.escape(wildcard)}[\w-]*\b"
-                                matches = re.findall(pattern, text)
-                            else:
-                                matches = []
-                        else:
-                            pattern_core = re.escape(seed).replace(r'\*', r'[\w-]*')
-                            pattern = rf"\b{pattern_core}\b"
-                            matches = re.findall(pattern, text)
+                        if seed in phrase_seeds[key]:
+                            words, phrase_regex = phrase_seeds[key][seed]
+                            for groups in phrase_regex.findall(text):
+                                variant_key = phrase_variant_key(groups, exclude_hyphens)
+                                phrase_variants[key].add(variant_key)
+                                if variant_key not in discovered_variants[key]:
+                                    discovered_variants[key].add(variant_key)
+                                    new[key] = True
+                                variants[key][base][variant_key] += 1
+                            continue
+
+                        pattern_core = re.escape(seed).replace(r'\*', r'[\w-]*')
+                        pattern = rf"\b{pattern_core}\b"
+                        matches = re.findall(pattern, text)
 
                         for match in matches:
                             match_lower = match.lower()
@@ -572,12 +723,12 @@ def find_combined_variants(term1_query, term2_query, date_from=None, date_to=Non
 
                             # If exclude_hyphens is ON: ALWAYS count the prefix, NEVER the hyphenated form
                             if exclude_hyphens and is_hyphenated:
-                                prefix = match_lower.split('-', 1)[0]   # or match_norm.split('-',1)[0]
+                                prefix = match_lower.split('-', 1)[0]
                                 prefix = norm_ws(prefix)
 
                                 if prefix not in discovered_variants[key]:
                                     discovered_variants[key].add(prefix)
-                                    new_found = True
+                                    new[key] = True
 
                                 variants[key][base][prefix] += 1
                                 continue
@@ -589,15 +740,43 @@ def find_combined_variants(term1_query, term2_query, date_from=None, date_to=Non
 
                             if variant_key not in discovered_variants[key]:
                                 discovered_variants[key].add(variant_key)
-                                new_found = True
+                                new[key] = True
 
                             variants[key][base][variant_key] += 1
+        return new
 
-        if not new_found:
-            break
+    # Only concepts with wildcard terms can yield new variants.
+    active = {key: bool(truncated_terms[key]) for key in ('term1', 'term2')}
 
-        term1_exclusions = set(discovered_variants['term1']) - literal_seeds['term1']
-        term2_exclusions = set(discovered_variants['term2']) - literal_seeds['term2']
+    iteration = 0
+    while iteration < 21 and any(active.values()):
+        if iteration == 0:
+            queries = [(None, f"{clause('term1', False)} AND {clause('term2', False)}")]
+        else:
+            # One query per concept, excluding only that concept's known variants.
+            # Excluding both at once would skip every record that has a new variant
+            # of one concept next to an already-known variant of the other.
+            queries = [(key, f"{clause('term1', key == 'term1')} AND {clause('term2', key == 'term2')}")
+                       for key in ('term1', 'term2') if active[key]]
+
+        new_this_round = {'term1': False, 'term2': False}
+        no_records = set()
+        for key, full_query in queries:
+            print(f"[DEBUG] Iteration {iteration + 1} - Combined PubMed query:\n{full_query}\n")
+            pmids = get_pmids(full_query, date_from=date_from, date_to=date_to)
+            if not pmids:
+                no_records.add(key)
+                continue
+            found = mine(pmids)
+            for k in found:
+                new_this_round[k] = new_this_round[k] or found[k]
+
+        for key in ('term1', 'term2'):
+            # A concept stays active while it keeps yielding new variants and its query still returns records
+            active[key] = new_this_round[key] and key not in no_records and None not in no_records
+
+        exclusions['term1'] = set(discovered_variants['term1']) - literal_seeds['term1']
+        exclusions['term2'] = set(discovered_variants['term2']) - literal_seeds['term2']
 
         iteration += 1
 
@@ -643,8 +822,8 @@ def search():
     print(f"[DEBUG] Precise proximity enabled? {precise}")
     
     try:
-        term1_list = [t.strip() for t in re.split(r'\s+or\s+', term1_query, flags=re.I) if t.strip()]
-        term2_list = [t.strip() for t in re.split(r'\s+or\s+', term2_query, flags=re.I) if t.strip()]
+        term1_list = split_or_terms(term1_query)
+        term2_list = split_or_terms(term2_query)
 
         if precise:
             variants = find_precise_variants(term1_list, term2_list, date_from, date_to, exclude_hyphens)
@@ -716,7 +895,27 @@ def generate_proximity_search():
     ]
 
     proximity_query = " OR ".join(combinations)
-    return jsonify({"proximity_query": proximity_query})
+
+    # PubMed does not keep phrases together in proximity searches: the words of
+    # "hand-offs test"[tiab:~3] are searched as separate words. Give an example.
+    phrase_warning = None
+    t1_clean = [clean(t).strip() for t in term1_variants]
+    t2_clean = [clean(t).strip() for t in term2_variants]
+    multi1 = next((w for w in t1_clean if WORD_SEP_RE.search(w)), None)
+    multi2 = next((w for w in t2_clean if WORD_SEP_RE.search(w)), None)
+    if (multi1 or multi2) and t1_clean and t2_clean:
+        a = multi1 or t1_clean[0]
+        b = t2_clean[0] if multi1 else multi2
+        phrase, other = (a, b) if multi1 else (b, a)
+        phrase_warning = {
+            'clause': f'"{a} {b}"[tiab:~{proximity_distance}]',
+            'words': [w for w in WORD_SEP_RE.split(f"{a} {b}") if w],
+            'phrase': phrase,
+            'other': other,
+            'distance': proximity_distance,
+        }
+
+    return jsonify({"proximity_query": proximity_query, "phrase_warning": phrase_warning})
 
 ...
 @app.route('/get_keyword_variants', methods=['POST'])
@@ -747,10 +946,6 @@ def get_keyword_variants():
             "trace": traceback.format_exc(),
             "partial_results": []
         }), 500
-
-@app.route('/memory_game')
-def memory_game():
-    return render_template('platform_game.html')
 
 @app.route('/contact')
 def contact():
