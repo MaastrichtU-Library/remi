@@ -75,7 +75,7 @@
         <label>
             <input type="checkbox" id="exclude_hyphens" name="exclude_hyphens" value="true" checked>
             Exclude Hyphenated Words
-            <span style="cursor: help; color: #007fad;" title="Omits hyphenated variants like cancer-related. Keeps the prefix (e.g. 'cancer') if not already found.">🛈</span>
+            <span style="cursor: help; color: #007fad;" title="Omits hyphenated variants like cancer-related. Keeps the prefix (e.g. 'cancer') if not already found. Phrases you enter yourself, like hand-off*, keep their hyphen.">🛈</span>
         </label>        
 
         <button id="search" class="button-primary">Find Variants</button>
@@ -250,7 +250,7 @@ $(document).ready(function() {
         $('#keyword').val('');
         $('#date_from').val('');
         $('#date_to').val('');
-        $('#exclude_hyphens').prop('checked', false);
+        $('#exclude_hyphens').prop('checked', true);
         $('#clear-inputs').hide();
     });
 
