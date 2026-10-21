@@ -13,6 +13,8 @@ Maastricht University names, logos, trademarks, and other third-party materials 
 REMI 2.1 (Related Expression Machine Identification) is a web application that helps identify related expressions for PubMed searches.This tool helps researchers explore keyword variants and proximity operators in PubMed searches efficiently.
 This short guide explains how to run REMI on your own computer. No programming experience is required.
 
+If you are unable to follow a simple guide like this: a windows installer is available under "releases". 
+
 ## What you need
 
 - A Windows, macOS, or Linux computer
@@ -169,8 +171,6 @@ CONTACT_EMAIL =
 Replace both placeholder values with the keys you created. `CONTACT_EMAIL` is optional; you can leave it empty. REMI will not start until `SECRET_KEY` contains a real key. Do not add quotation marks around the keys.
 
 Save the file and make sure your editor has not renamed it to `config.ini.txt`.
-
-> **Keep these keys private.** Do not publish your completed `config.ini`, commit it to GitHub, send it by email, or include it in a public ZIP file. A public repository should contain only a placeholder/example configuration file.
 
 ## 9. Start REMI
 
