@@ -1,8 +1,13 @@
-runtime: python310
+runtime: python314
 
-# gunicorn is google's production flask server for the app.
-# I put -t 0 there to avoid timeouts if the app takes some time for the pubmed query.
-entrypoint: gunicorn -t 0 -b :$PORT main:app
+# Python 3.10 reached end of support on App Engine on 2026-10-04; deploys with
+# python310 are refused. Python 3.14 is supported until 2030-10-10.
+
+# gunicorn is the production web server for the app. REMI keeps search progress
+# in memory, which separate worker processes do not share, so it runs as one
+# worker with 8 threads: a long search no longer blocks other users' requests.
+# --timeout 0 avoids timeouts while PubMed queries take a while.
+entrypoint: gunicorn -b :$PORT --workers 1 --threads 8 --timeout 0 main:app
 
 # this just means that any request goes through main.py and index.html
 handlers:

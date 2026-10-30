@@ -17,10 +17,10 @@ This short guide explains how to run REMI on your own computer. No programming e
 
 - A Windows, macOS, or Linux computer
 - An internet connection, because REMI sends searches to PubMed/NCBI
-- Python 3.10 or 3.11
+- Python 3.12 or newer (3.14 recommended)
 - A free NCBI account
 
-The project is configured for Python 3.10. Python 3.11 is recommended for a new local installation. Do not use a Python version older than 3.10.
+The hosted version of REMI runs on Python 3.14, which is also recommended for a local installation. Do not use a Python version older than 3.12.
 
 ## 1. Download REMI from GitHub
 
@@ -46,7 +46,7 @@ Keep all extracted files and folders together. REMI will not work if only `main.
 
 Download Python from the [official Python website](https://www.python.org/downloads/).
 
-Python 3.11 is recommended for this version of REMI.
+Python 3.14 is recommended for this version of REMI.
 
 ### Windows
 
@@ -57,10 +57,10 @@ Python 3.11 is recommended for this version of REMI.
 Open **Command Prompt** and check the installed version:
 
 ```bat
-py -3.11 --version
+py -3.14 --version
 ```
 
-The result should start with `Python 3.11`.
+The result should start with `Python 3.14`.
 
 ### macOS or Linux
 
@@ -70,7 +70,7 @@ Open **Terminal** and check the installed version:
 python3 --version
 ```
 
-The result must be Python 3.10 or 3.11. If Python is missing or too old, install Python 3.11 before continuing.
+The result must be Python 3.12 or newer. If Python is missing or too old, install Python 3.14 before continuing.
 
 ## 3. Open a command window in the REMI folder
 
@@ -99,7 +99,7 @@ A virtual environment keeps REMI's Python packages separate from other programs 
 ### Windows — Command Prompt
 
 ```bat
-py -3.11 -m venv .venv
+py -3.14 -m venv .venv
 .venv\Scripts\activate.bat
 ```
 
@@ -170,6 +170,8 @@ Replace both placeholder values with the keys you created. `CONTACT_EMAIL` is op
 
 Save the file and make sure your editor has not renamed it to `config.ini.txt`.
 
+> **Keep these keys private.** Do not publish your completed `config.ini`, commit it to GitHub, send it by email, or include it in a public ZIP file. A public repository should contain only a placeholder/example configuration file.
+
 ## 9. Start REMI
 
 Make sure the virtual environment is still active, then run:
@@ -219,7 +221,7 @@ You do not need to recreate the virtual environment or reinstall the packages ea
 
 ### “Python was not found” or “py is not recognized”
 
-Reinstall Python 3.11 and make sure **Add python.exe to PATH** is selected in the Windows installer. Close and reopen Command Prompt afterward.
+Reinstall Python 3.14 and make sure **Add python.exe to PATH** is selected in the Windows installer. Close and reopen Command Prompt afterward.
 With a mac any python command may be "python3" instead of "python".
 
 ### PowerShell says that running scripts is disabled

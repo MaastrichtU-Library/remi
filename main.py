@@ -6,10 +6,8 @@ import re
 import os
 from collections import Counter
 from flask import Flask, request, render_template, jsonify, Response, stream_with_context, session
-from metapub import PubMedFetcher
 import uuid
-from datetime import datetime, timedelta
-import shutil
+from datetime import datetime, timedelta, timezone
 import threading
 from functools import wraps
 import logging
@@ -20,6 +18,15 @@ _cleanup_lock = threading.Lock()
 _last_cleanup_ts = 0
 
 ALLOWED_RE = re.compile(r'^[A-Za-z0-9*\s"\-]+$')
+
+# Input limits. They protect the server and the NCBI API key against abuse and
+# are set far above anything a real search needs.
+MAX_FIELD_CHARS = 4000          # characters per search field
+MAX_TERMS_PER_FIELD = 50        # terms (joined by OR) per field
+MAX_PRECISE_PAIRS = 150         # term pairs in Precise Proximity mode
+MAX_VARIANTS_PER_LIST = 5000    # selected variants per concept when generating
+MAX_COMBINATIONS = 100000       # proximity clauses in one generated search
+DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 
 # A term is either a single word (e.g. vaccin*) or a phrase whose words are
 # separated by spaces or hyphens (e.g. "hand off*" or hand-off*). In record
@@ -93,6 +100,20 @@ def phrase_variant_key(groups, exclude_hyphens):
     marker = '__H__' if any('-' in w for w in words) else ''
     return marker + '-'.join(words)
 
+def validate_date(value):
+    """Accept an empty value or a real date in the YYYY-MM-DD format the date
+    picker produces. Anything else could inject text into the PubMed query."""
+    if value is None or str(value).strip() == '':
+        return None
+    value = str(value).strip()
+    if not DATE_RE.match(value):
+        raise ValueError("Invalid date. Please use the date picker (YYYY-MM-DD).")
+    try:
+        datetime.strptime(value, '%Y-%m-%d')
+    except ValueError:
+        raise ValueError("Invalid date. Please use the date picker (YYYY-MM-DD).")
+    return value
+
 def validate_query_text(raw: str) -> str:
     if raw is None:
         raise ValueError("Empty input.")
@@ -100,6 +121,8 @@ def validate_query_text(raw: str) -> str:
     text = raw.strip()
     if not text:
         raise ValueError("Empty input.")
+    if len(text) > MAX_FIELD_CHARS:
+        raise ValueError(f"Input is too long (maximum {MAX_FIELD_CHARS} characters per field).")
 
     # 1) Only ASCII alnum, whitespace, *, hyphens, and double quotes
     if not ALLOWED_RE.match(text):
@@ -109,7 +132,10 @@ def validate_query_text(raw: str) -> str:
         raise ValueError('Unmatched double quote. Put quotes around a whole phrase, e.g. "hand off*".')
 
     # 2) Validate each term (split on OR, keeping quoted phrases together)
-    for term in split_or_terms(text):
+    terms = split_or_terms(text)
+    if len(terms) > MAX_TERMS_PER_FIELD:
+        raise ValueError(f"Too many terms (maximum {MAX_TERMS_PER_FIELD} per field).")
+    for term in terms:
         inner = term
         if '"' in term:
             if term.count('"') != 2 or not (term.startswith('"') and term.endswith('"')):
@@ -142,7 +168,45 @@ CLEANUP_INTERVAL_SECONDS = 15 * 60  # run cleanup at most every 15 minutes
 # set-up the secret keys. Make sure you have set them in the config.txt
 app = Flask(__name__)
 app.config['SECRET_KEY'] = config.SECRET_KEY
-os.environ['NCBI_API_KEY'] = config.NCBI_API_KEY
+app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024        # reject request bodies over 2 MB
+app.config['SESSION_COOKIE_HTTPONLY'] = True               # scripts cannot read the session cookie
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'             # not sent with cross-site POSTs
+# Only send the cookie over HTTPS on App Engine; local http://127.0.0.1 keeps working
+app.config['SESSION_COOKIE_SECURE'] = bool(os.environ.get('GAE_ENV') or os.environ.get('GAE_APPLICATION'))
+
+CONTENT_SECURITY_POLICY = "; ".join([
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' https://code.jquery.com",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data:",
+    "connect-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+])
+
+@app.after_request
+def set_security_headers(response):
+    response.headers.setdefault('Content-Security-Policy', CONTENT_SECURITY_POLICY)
+    response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    response.headers.setdefault('X-Frame-Options', 'DENY')
+    response.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
+    return response
+
+def redact(text):
+    """Remove the NCBI API key from text before it is logged."""
+    text = str(text)
+    if config.NCBI_API_KEY:
+        text = text.replace(config.NCBI_API_KEY, '[API key]')
+    return re.sub(r'(api_key=)[^&\s]+', r'\1[API key]', text)
+
+class PubMedError(Exception):
+    """PubMed could not be reached or answered with an error. The message is
+    safe to show to users: it never contains URLs, keys or technical details."""
+
+PUBMED_ERROR_MESSAGE = "PubMed did not respond as expected. Please try again in a few minutes."
 
 # Global query throttle
 QUERY_LOCK = threading.Lock()
@@ -172,7 +236,6 @@ def maybe_run_cleanup():
             return
 
         cleanup_old_sessions()
-        cleanup_old_cache()
 
         _last_cleanup_ts = now
 
@@ -185,13 +248,10 @@ def touch_session(sid: str) -> None:
     if not sid:
         return
     user_progress.setdefault(sid, {})
-    user_progress[sid]['last_seen'] = datetime.utcnow()
+    user_progress[sid]['last_seen'] = datetime.now(timezone.utc)
 
-alt_cache_dir = '/tmp/eutils_cache'
 user_progress = {}  # session_id: { search_data..., 'last_seen': datetime }
 USER_TIMEOUT = timedelta(minutes=30)
-CACHE_DIR = '/tmp/eutils_cache'
-CACHE_MAX_AGE_DAYS = 30
 
 @app.before_request
 def ensure_session_id():
@@ -208,7 +268,7 @@ def ensure_session_id():
     maybe_run_cleanup()
 
 def cleanup_old_sessions():
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     expired_ids = []
     for sid, entry in list(user_progress.items()):
@@ -224,25 +284,6 @@ def cleanup_old_sessions():
     for sid in expired_ids:
         # print(f"[DEBUG] Cleaning up expired session: {sid}")
         del user_progress[sid]
-
-def cleanup_old_cache():
-    now = time.time()
-    max_age = CACHE_MAX_AGE_DAYS * 86400  # seconds in 30 days
-
-    if not os.path.exists(CACHE_DIR):
-        return
-
-    for root, dirs, files in os.walk(CACHE_DIR):
-        for name in files:
-            filepath = os.path.join(root, name)
-            try:
-                if os.path.isfile(filepath):
-                    file_age = now - os.path.getmtime(filepath)
-                    if file_age > max_age:
-                        os.remove(filepath)
-                        #print(f"[DEBUG] Deleted old cache file: {filepath}")
-            except Exception as e:
-                print(f"[DEBUG] Error deleting cache file {filepath}: {e}")
 
 def find_precise_variants(term1_list, term2_list, date_from=None, date_to=None, exclude_hyphens=False):
     print("[DEBUG] ENTERED find_precise_variants()")
@@ -276,7 +317,7 @@ def find_precise_variants(term1_list, term2_list, date_from=None, date_to=None, 
             user_progress[session['id']]['precise_progress'] = {
                 'current': completed,
                 'total': total,
-                'last_updated': datetime.utcnow().isoformat()
+                'last_updated': datetime.now(timezone.utc).isoformat()
             }
 
     return all_variants
@@ -356,10 +397,33 @@ def update_combined_query(term1, term2, term1_exclusions, term2_exclusions):
 
     return f"({term1_clause}) AND ({term2_clause})"
 
+ESEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+
+def ncbi_params(**params):
+    """Parameters every E-utilities request carries: tool name, API key, contact."""
+    params["tool"] = "REMI"
+    if config.NCBI_API_KEY:
+        params["api_key"] = config.NCBI_API_KEY
+    contact = getattr(config, 'CONTACT_EMAIL', '')
+    if contact:
+        params["email"] = contact
+    return params
+
+def ncbi_headers():
+    contact = getattr(config, 'CONTACT_EMAIL', '')
+    return {"User-Agent": "REMI/2.1" + (f" ({contact})" if contact else "")}
+
 @rate_limited_request
 def get_pmids(query, retmax=1000, date_from=None, date_to=None):
-    from metapub import PubMedFetcher
-    fetch = PubMedFetcher(cachedir=alt_cache_dir)
+    """Return up to `retmax` PMIDs for `query` from PubMed's ESearch.
+
+    This replaces metapub's pmids_for_query(). Like metapub 0.5.9, it sends no
+    sort parameter, so PubMed's default order is kept (metapub 0.6+ forces a
+    relevance sort that is not stable between requests). There is no cache, so
+    results always reflect PubMed at the time of the search. POST is used
+    because the exclusion lists can make the query too long for a URL."""
+    date_from = validate_date(date_from)
+    date_to = validate_date(date_to)
 
     date_range = ""
     if date_from and date_to:
@@ -370,22 +434,24 @@ def get_pmids(query, retmax=1000, date_from=None, date_to=None):
         date_range = f' AND ("1800"[PDAT] : "{date_to}"[PDAT])'
 
     full_query = query + date_range
+    params = ncbi_params(db="pubmed", term=full_query, retmax=retmax, retmode="json")
 
     last_exception = None
-
     for attempt in range(3):
         try:
-            return fetch.pmids_for_query(query=full_query, retmax=retmax)
-        except Exception as e:
+            response = requests.post(ESEARCH_URL, data=params, headers=ncbi_headers(), timeout=30)
+            response.raise_for_status()
+            result = response.json().get("esearchresult", {})
+            if "ERROR" in result:
+                raise PubMedError(f"ESearch error: {result['ERROR']}")
+            return [str(pmid) for pmid in result.get("idlist", [])]
+        except (requests.RequestException, ValueError, PubMedError) as e:
             last_exception = e
-            delay = 2 ** attempt
-            print(f"[DEBUG] get_pmids() failed (attempt {attempt + 1}/3): {e}")
-            time.sleep(delay)
+            print(f"[DEBUG] get_pmids() failed (attempt {attempt + 1}/3): {redact(e)}")
+            time.sleep(2 ** attempt)
 
-    final_error = f"get_pmids() failed after 3 attempts. Last error: {last_exception}"
-    print(f"[DEBUG] {final_error}")
-    logging.error(final_error)
-    raise Exception(final_error)
+    logging.error(redact(f"get_pmids() failed after 3 attempts. Last error: {last_exception}"))
+    raise PubMedError(PUBMED_ERROR_MESSAGE)
 
 @rate_limited_request
 def extract_title_abstract(pmid_chunk):
@@ -394,13 +460,8 @@ def extract_title_abstract(pmid_chunk):
 
     pmid_str = ','.join(pmid_chunk)
     efetch = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-    params = {"db": "pubmed", "retmode": "xml", "id": pmid_str, "tool": "REMI"}
-    if config.NCBI_API_KEY:
-        params["api_key"] = config.NCBI_API_KEY
-    contact = getattr(config, 'CONTACT_EMAIL', '')
-    if contact:
-        params["email"] = contact
-    headers = {"User-Agent": "REMI/2.1" + (f" ({contact})" if contact else "")}
+    params = ncbi_params(db="pubmed", retmode="xml", id=pmid_str)
+    headers = ncbi_headers()
 
     def element_text(elem):
         # itertext() also returns text inside <i>, <sup>, <sub> etc.; elem.text stops at the first tag
@@ -445,31 +506,31 @@ def extract_title_abstract(pmid_chunk):
         except requests.RequestException as e:
             last_exception = e
             delay = 2 ** attempt
-            msg = f"PubMed fetch failed (try {attempt + 1}/3): {e}"
+            msg = redact(f"PubMed fetch failed (try {attempt + 1}/3): {e}")
             print(f"[DEBUG] {msg}")
             logging.warning(msg)
             time.sleep(delay)
 
         except ET.ParseError as e:
-            msg = f"XML parsing failed: {e}"
+            msg = redact(f"XML parsing failed: {e}")
             print(f"[DEBUG] {msg}")
             logging.warning(msg)
-            raise Exception("PubMed response could not be parsed. Please try again later.")
+            raise PubMedError(PUBMED_ERROR_MESSAGE)
 
         except Exception as e:
-            msg = f"Unexpected error in extract_title_abstract(): {e}"
+            msg = redact(f"Unexpected error in extract_title_abstract(): {e}")
             print(f"[DEBUG] {msg}")
             logging.error(msg)
-            raise Exception("Unexpected error occurred while processing PubMed response.")
+            raise PubMedError(PUBMED_ERROR_MESSAGE)
 
     if last_exception:
-        final_error = f"PubMed fetch failed after 3 attempts: {last_exception}"
+        final_error = redact(f"PubMed fetch failed after 3 attempts: {last_exception}")
     else:
         final_error = "PubMed fetch failed after 3 attempts due to unknown error."
 
     print(f"[DEBUG] {final_error}")
     logging.error(final_error)
-    raise Exception(final_error)
+    raise PubMedError(PUBMED_ERROR_MESSAGE)
 
 def chunk_pmids(pmids, chunk_size=200):
     for i in range(0, len(pmids), chunk_size):
@@ -814,8 +875,11 @@ def search():
     except ValueError as e:
         return jsonify({"status": "error", "message": str(e)}), 400
 
-    date_from = request.form.get('date_from')
-    date_to = request.form.get('date_to')
+    try:
+        date_from = validate_date(request.form.get('date_from'))
+        date_to = validate_date(request.form.get('date_to'))
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
     exclude_hyphens = str(request.form.get('exclude_hyphens', '')).lower() in ('true', 'on', '1', 'yes')
     #exclude_hyphens = request.form.get('exclude_hyphens') == 'true'
     precise = request.form.get('precise_proximity') == 'true'    
@@ -824,6 +888,12 @@ def search():
     try:
         term1_list = split_or_terms(term1_query)
         term2_list = split_or_terms(term2_query)
+
+        if precise and len(term1_list) * len(term2_list) > MAX_PRECISE_PAIRS:
+            return jsonify({"status": "error", "message":
+                f"Precise Proximity is limited to {MAX_PRECISE_PAIRS} term pairs "
+                f"({len(term1_list)} x {len(term2_list)} = {len(term1_list) * len(term2_list)} requested). "
+                "Use fewer terms, or switch Precise Proximity off."}), 400
 
         if precise:
             variants = find_precise_variants(term1_list, term2_list, date_from, date_to, exclude_hyphens)
@@ -844,16 +914,19 @@ def search():
 
     except Exception as e:
         import traceback
+        # Full details go to the server log only (with the API key removed);
+        # the browser gets a plain message without technical details.
+        logging.error(redact(traceback.format_exc()))
+        message = str(e) if isinstance(e, PubMedError) else "Something went wrong during the search. Please try again."
         user_progress[session['id']] = {
             'term1_query': term1_query,
             'term2_query': term2_query,
             'term1_variants': variants['term1'] if 'variants' in locals() else {},
             'term2_variants': variants['term2'] if 'variants' in locals() else {},
-            'error': str(e),
-            'trace': traceback.format_exc()
+            'error': message,
         }
         touch_session(session['id'])
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({"status": "error", "message": message}), 500
 
 @app.route('/search_stream', methods=['GET'])
 def search_stream():
@@ -881,10 +954,24 @@ def search_stream():
 
 @app.route('/generate_proximity_search', methods=['POST'])
 def generate_proximity_search():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     term1_variants = data.get('term1_variants', [])
     term2_variants = data.get('term2_variants', [])
     proximity_distance = data.get('proximity_distance', 3)
+
+    # Check what the browser sent before building a potentially very long string
+    if not (isinstance(term1_variants, list) and isinstance(term2_variants, list)
+            and all(isinstance(t, str) and len(t) <= 200 for t in term1_variants + term2_variants)):
+        return jsonify({"error": "Invalid variant lists."}), 400
+    if len(term1_variants) > MAX_VARIANTS_PER_LIST or len(term2_variants) > MAX_VARIANTS_PER_LIST \
+            or len(term1_variants) * len(term2_variants) > MAX_COMBINATIONS:
+        return jsonify({"error": "Too many variants selected to generate one search."}), 400
+    try:
+        proximity_distance = int(str(proximity_distance).strip())
+        if not 1 <= proximity_distance <= 99:
+            raise ValueError
+    except ValueError:
+        return jsonify({"error": "The proximity distance must be a whole number from 1 to 99."}), 400
 
     def clean(word):
         return word.replace(' [+hyphen]', '')
@@ -920,14 +1007,14 @@ def generate_proximity_search():
 ...
 @app.route('/get_keyword_variants', methods=['POST'])
 def get_keyword_variants():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     term = data.get('term')
-    date_from = data.get('date_from')
-    date_to = data.get('date_to')
-    exclude_hyphens = data.get('exclude_hyphens', False)
+    exclude_hyphens = data.get('exclude_hyphens', False) is True
     
     try:
-        term = validate_query_text(term)
+        term = validate_query_text(term if isinstance(term, str) else None)
+        date_from = validate_date(data.get('date_from'))
+        date_to = validate_date(data.get('date_to'))
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
@@ -935,15 +1022,16 @@ def get_keyword_variants():
         variants = find_keyword_variants(term, date_from=date_from, date_to=date_to, exclude_hyphens=exclude_hyphens)
         return jsonify({"variants": variants})
     except PartialResultsError as e:
+        logging.error(redact(f"Keyword search stopped early: {e}"))
         return jsonify({
-            "error": str(e),
+            "error": PUBMED_ERROR_MESSAGE + " The variants found so far are shown.",
             "partial_results": e.partial_results
         }), 500
     except Exception as e:
         import traceback
+        logging.error(redact(traceback.format_exc()))
         return jsonify({
-            "error": str(e),
-            "trace": traceback.format_exc(),
+            "error": "Something went wrong during the search. Please try again.",
             "partial_results": []
         }), 500
 
@@ -962,4 +1050,5 @@ def precise_progress():
     return jsonify(progress)
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+    # Local use only; on App Engine, gunicorn serves the app (see app.yaml)
+    app.run(host='127.0.0.1', port=int(os.environ.get('PORT', 8080)))
