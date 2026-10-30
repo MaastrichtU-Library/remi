@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Proximity Search - REMI 2.1</title>
     <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
-    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js" integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&amp;display=swap" rel="stylesheet">
@@ -120,6 +120,9 @@
 <button id="scroll-to-top" title="Back to Top">⬆️</button>
 
 <script>
+    // Show server text as plain text, never as HTML
+    function escapeHtml(text) { return $('<div>').text(String(text)).html(); }
+
 $(document).ready(function() {
     const funnyMessages = [
     "Sharpening the Viking hammer...",
@@ -274,7 +277,7 @@ $(document).ready(function() {
         
                         if (data.error) {
                             $('#term1-results, #term2-results').html(
-                                `<p style='color:red;'>❌ ${data.error}</p>`
+                                `<p style='color:red;'>❌ ${escapeHtml(data.error)}</p>`
                             );
                         }
         
@@ -306,7 +309,7 @@ $(document).ready(function() {
                 try {
                     const response = JSON.parse(xhr.responseText);
                     if (response.message) {
-                        msg += `<p>${response.message}</p>`;
+                        msg += `<p>${escapeHtml(response.message)}</p>`;
                     }
                 } catch (e) {
                     msg += "<p>Could not parse error response.</p>";
