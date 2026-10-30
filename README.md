@@ -13,8 +13,6 @@ Maastricht University names, logos, trademarks, and other third-party materials 
 REMI 2.1 (Related Expression Machine Identification) is a web application that helps identify related expressions for PubMed searches.This tool helps researchers explore keyword variants and proximity operators in PubMed searches efficiently.
 This short guide explains how to run REMI on your own computer. No programming experience is required.
 
-If you are unable to follow a simple guide like this: a windows installer is available under "releases". 
-
 ## What you need
 
 - A Windows, macOS, or Linux computer
